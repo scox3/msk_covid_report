@@ -1,0 +1,496 @@
+<script src="msk_covid_report_files/header-attrs-2.7/header-attrs.js"></script>
+
+<div id="TOC">
+<ul>
+<li><a href="#some-visualizations">Some visualizations</a></li>
+</ul>
+</div>
+
+<p>The data about hospitalizations with COVID-19 in Moscow are hard to find in public datasets. However these data are daily published in the specialized Telegram channel, so they can be parsed from there to be used in data analysis.</p>
+<p>The first step is to download Telegram chat stream. That can be easily done with the desktop <a href="https://winaero.com/export-chat-history-file-telegram-desktop/">Telegram client</a> so I will skip this step and assume that the necessary data, i.e. a set of files “messages.html” is ready (<a href="https://drive.google.com/drive/folders/1RxlKL6kQ1FtsFyg9v-AutkkwGJbdNnja?usp=sharing">here is the copy</a>). Below I will explain how to convert them into a dataset.</p>
+<pre class="r"><code>#Usual libraries
+library(purrr)</code></pre>
+<pre><code>## Warning: package &#39;purrr&#39; was built under R version 3.6.3</code></pre>
+<pre class="r"><code>library(stringi)</code></pre>
+<pre><code>## Warning: package &#39;stringi&#39; was built under R version 3.6.2</code></pre>
+<pre class="r"><code>library(stringr)
+library(data.table)</code></pre>
+<pre><code>## Warning: package &#39;data.table&#39; was built under R version 3.6.3</code></pre>
+<pre><code>## 
+## Attaching package: &#39;data.table&#39;</code></pre>
+<pre><code>## The following object is masked from &#39;package:purrr&#39;:
+## 
+##     transpose</code></pre>
+<pre class="r"><code>library(ggplot2)</code></pre>
+<pre><code>## Warning: package &#39;ggplot2&#39; was built under R version 3.6.3</code></pre>
+<pre class="r"><code>library(lubridate)</code></pre>
+<pre><code>## Warning: package &#39;lubridate&#39; was built under R version 3.6.3</code></pre>
+<pre><code>## 
+## Attaching package: &#39;lubridate&#39;</code></pre>
+<pre><code>## The following objects are masked from &#39;package:data.table&#39;:
+## 
+##     hour, isoweek, mday, minute, month, quarter, second, wday, week,
+##     yday, year</code></pre>
+<pre><code>## The following objects are masked from &#39;package:base&#39;:
+## 
+##     date, intersect, setdiff, union</code></pre>
+<pre class="r"><code>#For ACF plots
+library(forecast)</code></pre>
+<pre><code>## Warning: package &#39;forecast&#39; was built under R version 3.6.3</code></pre>
+<pre><code>## Registered S3 method overwritten by &#39;quantmod&#39;:
+##   method            from
+##   as.zoo.data.frame zoo</code></pre>
+<pre class="r"><code>#Regression trees
+library(rpart)
+
+
+
+
+
+library(rprojroot)</code></pre>
+<pre><code>## Warning: package &#39;rprojroot&#39; was built under R version 3.6.3</code></pre>
+<pre class="r"><code>global.root.folder &lt;- rprojroot::is_rstudio_project$find_file()
+
+source(paste0(global.root.folder, &quot;/module_parse_telegram.R&quot;))
+
+##PARAMS
+f.rebuild.db &lt;- FALSE
+f.update.db &lt;- FALSE
+
+
+filename.data.path &lt;- paste0(global.root.folder, &quot;/data/&quot;)
+filename.updated.db &lt;- paste0(filename.data.path, 
+                              &quot;covid-moscow-dataset.csv&quot;)
+
+cyclic.comp.st.date &lt;- make_date(2021,1,18)
+
+
+dt.data &lt;- read.csv(filename.updated.db,
+                    stringsAsFactors = FALSE)
+dt.data &lt;- as.data.table( dt.data[ , -1])
+dt.data[ , date := as_date(date)]</code></pre>
+<p>Congratulations with success.</p>
+<pre class="r"><code>dt.data[1:5]</code></pre>
+<pre><code>##    new_hosp new_diag curr_ivl new_dead       date
+## 1:      827     2424       NA       NA 2020-10-01
+## 2:      952     2704      242       NA 2020-10-02
+## 3:      896     2884      245       NA 2020-10-03
+## 4:      884     3327      247       NA 2020-10-04
+## 5:      771     3537      251       NA 2020-10-05</code></pre>
+<div id="some-visualizations" class="section level2">
+<h2>Some visualizations</h2>
+<p>Now it is time to plot the data!</p>
+<pre class="r"><code>dt.data[, ix := date- min(date)]
+dt2 &lt;- data.table( ix=c(1:dt.data[, max(ix)]))
+dt2 &lt;- merge( dt2, dt.data, on=&quot;ix&quot;, all.x=TRUE)
+dt2[ is.na(date), date := min(dt.data$date)+ix]
+#dt2[ is.na(new_diag), new_diag := 1 ]
+
+library(tidyr)</code></pre>
+<pre><code>## Warning: package &#39;tidyr&#39; was built under R version 3.6.3</code></pre>
+<pre class="r"><code>dt2.fill &lt;- tidyr::fill(dt2, &quot;new_diag&quot;,&quot;new_hosp&quot;, .direction = &quot;down&quot;)
+rm(dt2)
+
+ts.new_diag &lt;- ts(as.data.table(dt2.fill)[ date &gt;= cyclic.comp.st.date, 
+                                           new_diag], frequency=7)
+stl.log.new_diag &lt;- stl(log(ts.new_diag), s.window = &quot;periodic&quot;)</code></pre>
+<p>No clear indication for a time lag between the two series. However cross correlation function is more biases towards negative lags as it should be: diagnostic sightly precedes hospitalizations.</p>
+<pre class="r"><code>ccf1 &lt;- ccf(dt2.fill$new_diag, dt2.fill$new_hosp, 
+            plot=FALSE)
+
+df.ccf1 &lt;- data.frame(ccf=ccf1$acf, lag=ccf1$lag)
+
+ggplot(data.frame(ccf=ccf1$acf, lag=ccf1$lag), aes(lag, ccf))+
+  geom_path(color=&quot;blue&quot;, size=1)+
+  geom_vline(xintercept=0, linetype=2) +
+  ggtitle(&quot;COVID-19 MSK: CCF new cases number ~ new hospitalizations number&quot;)+
+  theme_bw()</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-4-1.png" width="672" /></p>
+<p>No indication for periodicity in the auto correlation function (same is in logs).</p>
+<pre class="r"><code>ggAcf(dt2.fill$new_diag)+
+  ggtitle(&quot;MSK Covid-19: ACF of the time series the number of new cases&quot;)+ 
+  theme_bw()</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-1.png" width="672" /></p>
+<pre class="r"><code>acf(dt2.fill$new_diag, type=&quot;partial&quot;)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-2.png" width="672" /></p>
+<pre class="r"><code>##from monday
+cyclic.comp.st.date &lt;- make_date(2021,1,18)
+weekdays(cyclic.comp.st.date)</code></pre>
+<pre><code>## [1] &quot;понедельник&quot;</code></pre>
+<pre class="r"><code>plot( stl.log.new_diag)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-3.png" width="672" /></p>
+<pre class="r"><code>plot( exp( stl.log.new_diag$time.series[1:7,1]), type=&quot;l&quot;, 
+      main=&quot;Mult. cyclic weekly conponent&quot;)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-4.png" width="672" /></p>
+<pre class="r"><code>sd( stl.log.new_diag$time.series[,3])</code></pre>
+<pre><code>## [1] 0.09339668</code></pre>
+<pre class="r"><code>vec.weekday_coef &lt;- exp( stl.log.new_diag$time.series[1:7,1])
+
+
+dt.data[ , new_diag_corr := new_diag/vec.weekday_coef[wday(date, week_start=1)]]
+
+plot( stl.log.new_diag$time.series[1:7,1] / sd( stl.log.new_diag$time.series[,3]),
+      main=&quot;Relative significance of seasonal component&quot;, type=&quot;l&quot;)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-5.png" width="672" /></p>
+<pre class="r"><code>#Main+random (latest)
+tail(exp( stl.log.new_diag$time.series[,2] + stl.log.new_diag$time.series[,3]))</code></pre>
+<pre><code>## Time Series:
+## Start = c(24, 6) 
+## End = c(25, 4) 
+## Frequency = 7 
+## [1] 6816.947 7216.819 6520.525 6349.104 6740.795 5560.403</code></pre>
+<pre class="r"><code>tail(dt.data[, new_diag_corr])</code></pre>
+<pre><code>## [1] 6816.947 7216.819 6520.525 6349.104 6740.795 5560.403</code></pre>
+<pre class="r"><code>#Main component (latest)
+tail( exp( stl.log.new_diag$time.series[,2] ))</code></pre>
+<pre><code>## Time Series:
+## Start = c(24, 6) 
+## End = c(25, 4) 
+## Frequency = 7 
+## [1] 6747.856 6627.064 6508.435 6369.887 6234.289 6091.287</code></pre>
+<pre class="r"><code>#Main+random
+plot( exp( stl.log.new_diag$time.series[,2] + stl.log.new_diag$time.series[,3]),
+      main=&quot;New patient withot cycle component&quot;)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-6.png" width="672" /></p>
+<pre class="r"><code>plot( density(stl.log.new_diag$time.series[,3]), main=&quot;Random component density&quot;)
+abline(v=0, lty=2)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-7.png" width="672" /></p>
+<pre class="r"><code>qqnorm(stl.log.new_diag$time.series[,3], 
+       ylab=&quot;Standardized Residuals&quot;, 
+       xlab=&quot;Normal Scores&quot;, 
+       main=&quot;Random component Normality test&quot;) 
+qqline(stl.log.new_diag$time.series[,3])</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-8.png" width="672" /></p>
+<pre class="r"><code>#Weekly cyclicity
+sprintf(&quot;%.2f&quot;, vec.weekday_coef)</code></pre>
+<pre><code>## [1] &quot;1.01&quot; &quot;0.87&quot; &quot;0.83&quot; &quot;1.09&quot; &quot;1.10&quot; &quot;1.09&quot; &quot;1.06&quot;</code></pre>
+<pre class="r"><code>##
+#Check
+weekdays( make_date(2021,1,18))</code></pre>
+<pre><code>## [1] &quot;понедельник&quot;</code></pre>
+<pre class="r"><code>ts.new_hosp &lt;- ts(as.data.table(dt2.fill)[ date &gt;= cyclic.comp.st.date, 
+                                           new_hosp], frequency=7)
+stl.log.new_hosp &lt;- stl(log(ts.new_hosp), s.window = &quot;periodic&quot;)
+plot( stl.log.new_hosp)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-9.png" width="672" /></p>
+<pre class="r"><code>vec.weekday_coef_hosp &lt;- exp( stl.log.new_hosp$time.series[1:7,1])
+sprintf(&quot;%.2f&quot;, vec.weekday_coef_hosp)</code></pre>
+<pre><code>## [1] &quot;0.89&quot; &quot;1.04&quot; &quot;1.01&quot; &quot;1.04&quot; &quot;1.04&quot; &quot;1.05&quot; &quot;0.94&quot;</code></pre>
+<pre class="r"><code>dt.data[ , new_hosp_corr := new_hosp/vec.weekday_coef_hosp[wday(date, week_start=1)]]
+
+
+ggplot( data.frame( x=c(1:7), cdiag = vec.weekday_coef, chosp = vec.weekday_coef_hosp),
+  aes( x= x, y = cdiag, color=&quot;Diag. cyclicity coef&quot;))+
+  geom_path(size=1)+
+  geom_path(aes( x= x, y = chosp, color=&quot;Hosp. cyclicity coef&quot;), size=1)+
+  xlab(&quot;Day of week&quot;)+
+  ylab(&quot;Coeff&quot;)+
+  ggtitle(&quot;New diag. and new hosp. cyclicity coeffs&quot;)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-10.png" width="672" /></p>
+<pre class="r"><code>##Note this indicates (if true) that hosp are 5 days lagged relative to diag
+
+ggplot(dt.data, aes(x=date, y=new_diag, color=&quot;Diagnosed&quot;))+
+  geom_path(size=1)+
+  geom_path(aes(y=new_hosp, color=&quot;Hospitalized&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Number of newly hospitalized and diagnosed patiens&quot;)+
+  xlab(&quot;Date&quot;)+
+  scale_color_discrete(name=&quot;&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-11.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data, aes(x=date, y=curr_ivl, color=&quot;IVL&quot;))+
+  geom_path(size=1)+
+  ggtitle(&quot;COVID-19 MSK: Number of IVL patiens&quot;)+
+  xlab(&quot;Date&quot;)+
+  scale_color_discrete(name=&quot;&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)</code></pre>
+<pre><code>## Warning: Removed 1 row(s) containing missing values (geom_path).</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-5-12.png" width="672" /></p>
+<p>The ratio of the number of hospitalizations to the number of new cases grows with time. More and more sick people skip official medicine entirely.</p>
+<pre class="r"><code>#Build regression tree for stepwise approximation
+
+dt.data[ , ratio.hosp.diagn := new_hosp/new_diag]
+reg.tree &lt;- rpart(ratio.hosp.diagn ~ date, data=dt.data,
+                  control=rpart.control(cp = 0.02))
+dt.data[ , hosp.rat.tree:= predict(reg.tree, dt.data)]
+
+ggplot(dt.data, aes(x=date, y=new_hosp/new_diag, color=&quot;Data&quot;))+
+  geom_path(size=1)+
+  geom_smooth(aes(color=&quot;Lowess&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Ratio of the number of new hospitalizations to\n the number of new registered (diagnosed) cases&quot;)+
+  xlab(&quot;Date&quot;)+
+  ylab(&quot;Ratio&quot;)+
+  geom_path(aes(y=hosp.rat.tree, color=&quot;Reg. tree&quot;), size=1)+
+  scale_color_discrete(name=&quot;&quot;) + 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-6-1.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data, aes(x=date, y=new_hosp/shift(new_diag, 5, type=&quot;lag&quot;), color=&quot;Data&quot;))+
+  geom_path(size=1)+
+  geom_smooth(aes(color=&quot;Lowess&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Ratio of the number of new hospitalizations to\n the number of new registered (diagnosed) cases, 5d shift&quot;)+
+  xlab(&quot;Date&quot;)+
+  ylab(&quot;Ratio&quot;)+
+  scale_color_discrete(name=&quot;&quot;) + 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-6-2.png" width="672" /></p>
+<p>Let’s check the ratios by direct calculations:</p>
+<pre class="r"><code>display_table&lt;-function(dd, ndigits=1, caption=&quot;&quot;) {
+  if( isTRUE(getOption(&#39;knitr.in.progress&#39;)) ) {
+    knitr::kable(dd, 
+                 caption=caption, digits=ndigits, format=&quot;html&quot;, align=&quot;c&quot;)
+  } else {
+    ndg &lt;- getOption(&quot;digits&quot;)
+    options(digits = ndigits)
+    print(dd, digits = ndigits)
+    options(digits = ndg)
+  }
+}   
+
+dt.average.hz.ratio &lt;- data.table( `Date` = c(&quot;Before 2020-12-31&quot;, &quot;After 2021-02-01&quot;),
+                                `Ratio`= 
+                                  c(dt.data[ date &lt;= as.Date(&quot;2020-12-31&quot;), sum(new_hosp)/sum(new_diag)], 
+                                  dt.data[ date &gt; as.Date(&quot;2021-02-01&quot;), sum(new_hosp)/sum(new_diag)]))
+display_table(dt.average.hz.ratio, ndigits=2, caption=&quot;Ratio of the number of hospitalizations to the number of cases&quot;)</code></pre>
+<table>
+<caption>
+<span id="tab:unnamed-chunk-7">Table 1: </span>Ratio of the number of hospitalizations to the number of cases
+</caption>
+<thead>
+<tr>
+<th style="text-align:center;">
+Date
+</th>
+<th style="text-align:center;">
+Ratio
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:center;">
+Before 2020-12-31
+</td>
+<td style="text-align:center;">
+0.24
+</td>
+</tr>
+<tr>
+<td style="text-align:center;">
+After 2021-02-01
+</td>
+<td style="text-align:center;">
+0.35
+</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>cbbPalette &lt;- c(&quot;#000000&quot;, &quot;#E69F00&quot;, &quot;#56B4E9&quot;, &quot;#009E73&quot;, &quot;#F0E442&quot;, &quot;#0072B2&quot;, &quot;#D55E00&quot;, &quot;#CC79A7&quot;)
+
+ggplot(dt.data, aes(x=date, y=new_diag, color=&quot;Diagnosed&quot;))+
+  geom_path(size=1)+
+  geom_path(aes(y=new_hosp/0.45, color=&quot;Hospitalized / 0.45&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Number of newly hospitalized (scaled) and diagnosed patients&quot;)+
+  xlab(&quot;Date&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)+
+  scale_color_manual(name=&quot;&quot;, breaks=c(&quot;Diagnosed&quot;, &quot;Hospitalized / 0.45&quot;),
+                       values=cbbPalette[2:3])</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-1.png" width="672" /></p>
+<pre class="r"><code>#  geom_path(aes(y=new_diag_corr, color=&quot;Diagnosed,\nweekday corrected&quot;), size=1)+
+
+
+ggplot(dt.data, aes(x=date, y=new_diag, color=&quot;Diagnosed&quot;))+
+  geom_path(size=0.5)+
+  geom_path(aes(y=new_diag_corr, color=&quot;Diagnosed,\nweekday corrected&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Week cycle corrected number of newly diagnosed patients&quot;)+
+  geom_smooth(aes(y=new_diag_corr, color=&quot;Decycled, loess&quot;), span=0.1)+
+  xlab(&quot;Date&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)+
+  scale_color_discrete(name=&quot;&quot;)</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-2.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data, aes(x=date, y=new_diag, color=&quot;Diagnosed&quot;))+ylim(1,1e4)+
+  geom_path(size=0.5)+
+  geom_path(aes(y=new_diag_corr, color=&quot;Diagnosed,\nweekday corrected&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Week cycle corrected number of newly diagnosed patients\n(lof scale)&quot;)+
+  geom_smooth(aes(y=new_diag_corr, color=&quot;Decycled, loess&quot;), span=0.1)+
+  xlab(&quot;Date&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)+
+  scale_color_discrete(name=&quot;&quot;)+scale_y_log10()</code></pre>
+<pre><code>## Scale for &#39;y&#39; is already present. Adding another scale for &#39;y&#39;, which will
+## replace the existing scale.
+## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-3.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data[ date&gt;=make_date(2021,5,1)], aes(x=date, y=new_diag, color=&quot;Diagnosed&quot;))+ylim(1,1e4)+
+  geom_path(size=0.5)+
+  geom_path(aes(y=new_diag_corr, color=&quot;Diagnosed,\nweekday corrected&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Week cycle corrected number of newly diagnosed patients\n(zoomed)&quot;)+
+  geom_smooth(aes(y=new_diag_corr, color=&quot;Decycled, loess&quot;), span=0.25)+
+  xlab(&quot;Date&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)+
+  scale_color_discrete(name=&quot;&quot;)</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-4.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data, aes(x=date, y=new_hosp, color=&quot;N. hosp.&quot;))+
+  geom_path(size=0.5)+
+  geom_path(aes(y=new_hosp_corr, color=&quot;N. hosp.,\ndecycled&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Cycle corrected number of newly hospitalized patients&quot;)+
+  geom_smooth(aes(y=new_hosp_corr, color=&quot;N. hosp., decycled,\nloess (0.1)&quot;), span=0.1, size=1)+
+  xlab(&quot;Date&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)+
+  scale_color_discrete(name=&quot;&quot;)</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-5.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data[date&gt;make_date(2021,5,1)], aes(x=date, y=new_hosp, color=&quot;N. hosp.&quot;))+
+  geom_path(size=0.5)+
+  geom_path(aes(y=new_hosp_corr, color=&quot;N. hosp.,\ndecycled&quot;), size=1)+
+  ggtitle(&quot;COVID-19 MSK: Cycle corrected number of newly hospitalized patients&quot;)+
+  geom_smooth(aes(y=new_hosp_corr, color=&quot;N. hosp., decycled,\nloess (0.25)&quot;), span=0.25, size=1)+
+  xlab(&quot;Date&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)+
+  scale_color_discrete(name=&quot;&quot;)</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-6.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data, aes(x=date, y=new_diag, color=&quot;Diagnosed&quot;))+
+  geom_smooth(span=0.2)+
+  geom_smooth(aes(y=new_hosp/0.45, color=&quot;Hospitalized / 0.45&quot;), span=0.2)+
+  ggtitle(&quot;COVID-19 MSK: Number of newly hospitalized (scaled) and\ndiagnosed patiens (loess, span=0.2)&quot;)+
+  xlab(&quot;Date&quot;)+
+  scale_color_discrete(name=&quot;&quot;)+
+  ylab(&quot;Number of patients&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;
+## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-7.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data, aes(x=new_diag, y=new_hosp))+
+  geom_point()+
+  geom_smooth(span=0.2)+
+  ggtitle(&quot;COVID-19 MSK: Number of newly hospitalized vs diagnosed patiens&quot;)+
+  xlab(&quot;New cases&quot;)+
+  scale_color_discrete(name=&quot;&quot;)+
+  ylab(&quot;New hospitalizations&quot;)+ 
+  theme_bw()</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-8.png" width="672" /></p>
+<pre class="r"><code>ggplot(dt.data, aes(x=log(new_diag), y=log(new_hosp)))+
+  geom_point()+
+  geom_smooth(span=0.4)+
+  ggtitle(&quot;COVID-19 MSK: Number of newly hospitalized vs diagnosed patiens&quot;)+
+  xlab(&quot;New cases&quot;)+
+  scale_color_discrete(name=&quot;&quot;)+
+  ylab(&quot;New hospitalizations&quot;)+ 
+  theme_bw()</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-9.png" width="672" /></p>
+<pre class="r"><code>lm1 &lt;- lm(log(new_hosp) ~ log(new_diag),data=dt.data)
+summary( lm1)</code></pre>
+<pre><code>## 
+## Call:
+## lm(formula = log(new_hosp) ~ log(new_diag), data = dt.data)
+## 
+## Residuals:
+##      Min       1Q   Median       3Q      Max 
+## -0.39630 -0.09274 -0.00174  0.11004  0.30156 
+## 
+## Coefficients:
+##               Estimate Std. Error t value Pr(&gt;|t|)    
+## (Intercept)    3.09652    0.12370   25.03   &lt;2e-16 ***
+## log(new_diag)  0.48310    0.01519   31.80   &lt;2e-16 ***
+## ---
+## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
+## 
+## Residual standard error: 0.1423 on 266 degrees of freedom
+## Multiple R-squared:  0.7918, Adjusted R-squared:  0.791 
+## F-statistic:  1011 on 1 and 266 DF,  p-value: &lt; 2.2e-16</code></pre>
+<pre class="r"><code>qqnorm(residuals(lm1))
+qqline(residuals(lm1))</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-10.png" width="672" /></p>
+<pre class="r"><code># ggplot(dt.data, aes(x=shift(new_diag, 7, &quot;lag&quot;), y=new_hosp))+
+#   geom_point()+
+#   geom_smooth(span=0.4)+
+#   ggtitle(&quot;COVID-19 MSK: Number of newly hospitalized vs diagnosed patiens, lag 7&quot;)+
+#   xlab(&quot;New cases&quot;)+
+#   scale_color_discrete(name=&quot;&quot;)+
+#   ylab(&quot;New hospitalizations&quot;)+ 
+#   theme_bw()
+
+
+ggplot(dt.data, aes(x=date, y=(new_diag/shift(new_diag,7)-1)), color=&quot;Data&quot;)+
+  geom_path()+
+  geom_smooth(span=0.1)+
+  ggtitle(&quot;COVID-19 MSK: Wow change in the number of newly diagnosed patiens&quot;)+
+  xlab(&quot;Date&quot;)+
+  scale_color_discrete(name=&quot;&quot;)+
+  ylab(&quot;(N / lag(N,7)) -1&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)</code></pre>
+<pre><code>## `geom_smooth()` using method = &#39;loess&#39; and formula &#39;y ~ x&#39;</code></pre>
+<pre><code>## Warning: Removed 7 rows containing non-finite values (stat_smooth).</code></pre>
+<pre><code>## Warning: Removed 7 row(s) containing missing values (geom_path).</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-11.png" width="672" /></p>
+<pre class="r"><code>library(zoo)</code></pre>
+<pre><code>## Warning: package &#39;zoo&#39; was built under R version 3.6.3</code></pre>
+<pre><code>## 
+## Attaching package: &#39;zoo&#39;</code></pre>
+<pre><code>## The following objects are masked from &#39;package:base&#39;:
+## 
+##     as.Date, as.Date.numeric</code></pre>
+<pre class="r"><code>rsum_cumsum &lt;- function(x, n = 7L) {
+  tail(cumsum(x) - cumsum(c(rep(0, n), head(x, -n))), -n + 1)
+}
+
+
+rsum_ratio &lt;- function(x) {
+  y &lt;- rsum_cumsum(x)
+  return( y/shift(y,7))  
+}
+
+length( dt.data$new_diag)</code></pre>
+<pre><code>## [1] 268</code></pre>
+<pre class="r"><code>length( rsum_cumsum(dt.data$new_diag))</code></pre>
+<pre><code>## [1] 262</code></pre>
+<pre class="r"><code>length( rsum_ratio(dt.data$new_diag)-1)</code></pre>
+<pre><code>## [1] 262</code></pre>
+<pre class="r"><code>length(dt.data$date)</code></pre>
+<pre><code>## [1] 268</code></pre>
+<pre class="r"><code>dt.data[ , length(date[7:length(date)])]</code></pre>
+<pre><code>## [1] 262</code></pre>
+<pre class="r"><code>dt.data[ , new_diag_week_av := (cumsum(new_diag)- shift(cumsum(new_diag),7 ))/7]
+
+ggplot(dt.data, aes(x=date, y=new_diag_week_av/shift(new_diag_week_av,7)-1, color=&quot;Data&quot;))+
+  geom_path()+
+  ggtitle(&quot;COVID-19 MSK: Wow change in the number of newly diagnosed patiens\n(week over week)&quot;)+
+  xlab(&quot;Date&quot;)+
+  scale_color_discrete(name=&quot;&quot;)+
+  ylab(&quot;N(7d)/lag(N(7d),7)-1&quot;)+ 
+  theme_bw()+
+  scale_x_date(date_labels = &quot;%d%-%m-%Y&quot;)</code></pre>
+<pre><code>## Warning: Removed 14 row(s) containing missing values (geom_path).</code></pre>
+<p><img src="msk_covid_report_files/figure-html/unnamed-chunk-7-12.png" width="672" /></p>
+<pre class="r"><code>tail(dt.data[,.(date, new_diag, new_diag_corr, new_diag_week_av, new_hosp, new_hosp_corr)],7)</code></pre>
+<pre><code>##          date new_diag new_diag_corr new_diag_week_av new_hosp new_hosp_corr
+## 1: 2021-07-02     6893      6273.739         7012.714     1719      1646.555
+## 2: 2021-07-03     7446      6816.947         6848.143     1756      1677.497
+## 3: 2021-07-04     7624      7216.819         6976.857     1548      1641.660
+## 4: 2021-07-05     6557      6520.525         6878.429     1385      1560.852
+## 5: 2021-07-06     5498      6349.104         6776.857     1598      1529.874
+## 6: 2021-07-07     5621      6740.795         6748.000     1601      1586.684
+## 7: 2021-07-08     6040      5560.403         6525.571     1717      1654.742</code></pre>
+</div>
