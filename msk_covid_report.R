@@ -106,7 +106,7 @@ ggplot( data.frame( x=c(1:7), cdiag = vec.weekday_coef, chosp = vec.weekday_coef
   xlab("Day of week")+
   ylab("Coeff")+
   ggtitle("New diag. and new hosp. cyclicity coeffs")+
-  scale_color_discrete(name="Weekly ciclicity coeffs. for:")
+  scale_color_discrete(name="Weekly cyclicity coeffs. for:")
 #' 
 
 #' From cyclicity coeffs we may guess that hospitalizations are really 5 days lagged relative to newly diagnosted.
